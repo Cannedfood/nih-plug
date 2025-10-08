@@ -446,6 +446,14 @@ impl Jack {
             let _ = client.connect_ports_by_name(&output.name()?, system_playback_port_name);
         }
 
+        for (i, input) in self.main_inputs.iter().enumerate() {
+            // The system ports are 1-indexed
+            let port_no = i + 1;
+
+            let system_capture_port_name = &format!("system:capture_{port_no}");
+            let _ = client.connect_ports_by_name(system_capture_port_name, &input.name()?);
+        }
+
         // This option can either be set to a single port all inputs should be connected to, or a
         // comma separated list of ports
         if let Some(port_name) = &self.config.connect_jack_inputs {
