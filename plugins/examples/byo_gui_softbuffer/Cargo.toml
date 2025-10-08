@@ -20,6 +20,6 @@ softbuffer = { version = "0.4.6", default-features = false, features = ["kms", "
 raw-window-handle = "0.5"
 raw-window-handle-06 = { package = "raw-window-handle", version = "0.6" }
 crossbeam = "0.8"
-atomic_float = "0.1"
+atomic_float = "1.1"
 # To make the state persistable
 serde = { version = "1.0", features = ["derive"] }

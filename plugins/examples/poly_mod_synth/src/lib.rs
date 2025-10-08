@@ -216,7 +216,7 @@ impl Plugin for PolyModSynth {
                                 note,
                                 velocity,
                             } => {
-                                let initial_phase: f32 = self.prng.gen();
+                                let initial_phase: f32 = self.prng.random();
                                 // This starts with the attack portion of the amplitude envelope
                                 let amp_envelope = Smoother::new(SmoothingStyle::Exponential(
                                     self.params.amp_attack_ms.value(),
