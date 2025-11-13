@@ -88,7 +88,7 @@ macro_rules! nih_export_clap {
                 if plugin_id.is_null() {
                     return ::std::ptr::null();
                 }
-                let plugin_id_cstr = CStr::from_ptr(plugin_id);
+                let plugin_id_cstr = unsafe { CStr::from_ptr(plugin_id) };
 
                 // This isn't great, but we'll just assume that `$plugin_ids` and the descriptors
                 // are in the same order. We also can't directly enumerate over them with an index,
@@ -102,7 +102,7 @@ macro_rules! nih_export_clap {
                         // Arc does not have a convenient leak function like Box, so this gets a bit awkward
                         // This pointer gets turned into an Arc and its reference count decremented in
                         // [Wrapper::destroy()]
-                        return (*Arc::into_raw(Wrapper::<$plugin_ty>::new(host)))
+                        return (unsafe { &*Arc::into_raw(Wrapper::<$plugin_ty>::new(host)) })
                             .clap_plugin
                             .as_ptr();
                     }
@@ -132,6 +132,7 @@ macro_rules! nih_export_clap {
         /// The CLAP plugin's entry point.
         #[no_mangle]
         #[used]
+        #[allow(non_upper_case_globals)]
         pub static clap_entry: $crate::wrapper::clap::clap_plugin_entry =
             $crate::wrapper::clap::clap_plugin_entry {
                 clap_version: $crate::wrapper::clap::CLAP_VERSION,
