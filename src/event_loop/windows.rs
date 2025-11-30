@@ -8,13 +8,13 @@ use std::ptr;
 use std::sync::Weak;
 use std::thread::{self, ThreadId};
 use windows::core::PCSTR;
-use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::{
     LibraryLoader::GetModuleHandleA, Performance::QueryPerformanceCounter,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExA, DefWindowProcA, DestroyWindow, GetWindowLongPtrA, PostMessageA,
-    RegisterClassExA, SetWindowLongPtrA, UnregisterClassA, CREATESTRUCTA, GWLP_USERDATA, HMENU,
+    RegisterClassExA, SetWindowLongPtrA, UnregisterClassA, CREATESTRUCTA, GWLP_USERDATA,
     WINDOW_EX_STYLE, WINDOW_STYLE, WM_CREATE, WM_DESTROY, WM_USER, WNDCLASSEXA,
 };
 
@@ -33,6 +33,13 @@ const NOTIFY_MESSAGE_ID: u32 = WM_USER;
 /// casted from a regular pointer.
 type PollCallback = Box<dyn Fn()>;
 
+/// A wrapper around HWND that implements Send and Sync.
+/// SAFETY: We only use this window handle from the main thread, and we ensure
+/// proper synchronization through the event loop mechanism.
+struct SendSyncHwnd(HWND);
+unsafe impl Send for SendSyncHwnd {}
+unsafe impl Sync for SendSyncHwnd {}
+
 /// See [`EventLoop`][super::EventLoop].
 pub(crate) struct WindowsEventLoop<T, E> {
     /// The thing that ends up executing these tasks. The tasks are usually executed from the worker
@@ -46,7 +53,7 @@ pub(crate) struct WindowsEventLoop<T, E> {
 
     /// An invisible window that we can post a message to when we need to do something on the main
     /// thread. The host's message loop will then cause our message to be proceeded.
-    message_window: HWND,
+    message_window: SendSyncHwnd,
     /// The unique class for the message window, we'll clean this up together with the window.
     message_window_class_name: CString,
     /// A queue of tasks that still need to be performed. When something gets added to this queue
@@ -70,7 +77,7 @@ where
         // Window classes need to have unique names or else multiple plugins loaded into the same
         // process will end up calling the other plugin's callbacks
         let mut ticks = 0i64;
-        assert!(unsafe { QueryPerformanceCounter(&mut ticks).as_bool() });
+        unsafe { QueryPerformanceCounter(&mut ticks).expect("QueryPerformanceCounter failed") };
         let class_name = CString::new(format!("nih-event-loop-{ticks}"))
             .expect("Where did these null bytes come from?");
         let class_name_ptr = PCSTR(class_name.as_bytes_with_nul().as_ptr());
@@ -79,7 +86,8 @@ where
             cbSize: mem::size_of::<WNDCLASSEXA>() as u32,
             lpfnWndProc: Some(window_proc),
             hInstance: unsafe { GetModuleHandleA(PCSTR(ptr::null())) }
-                .expect("Could not get the current module's handle"),
+                .expect("Could not get the current module's handle")
+                .into(),
             lpszClassName: class_name_ptr,
             ..Default::default()
         };
@@ -115,21 +123,22 @@ where
                 0,
                 0,
                 0,
-                HWND(0),
-                HMENU(0),
-                HINSTANCE(0),
+                None,
+                None,
+                None,
                 // NOTE: We're boxing a box here. As mentioned in [PollCallback], we can't directly
                 //       pass around fat pointers, so we need a normal pointer to a fat pointer to
                 //       be able to call this and deallocate it later
                 Some(Box::into_raw(Box::new(callback)) as *const c_void),
             )
-        };
-        assert_ne!(!window.0, 0);
+        }
+        .expect("Failed to create window");
+        assert!(!window.0.is_null());
 
         Self {
             executor: executor.clone(),
             main_thread_id: thread::current().id(),
-            message_window: window,
+            message_window: SendSyncHwnd(window),
             message_window_class_name: class_name,
             tasks_sender,
             background_thread: BackgroundThread::get_or_create(executor),
@@ -151,9 +160,16 @@ where
             if success {
                 // Instead of polling on a timer, we can just wake up the window whenever there's a
                 // new message.
-                unsafe {
-                    PostMessageA(self.message_window, NOTIFY_MESSAGE_ID, WPARAM(0), LPARAM(0))
-                };
+                if let Err(e) = unsafe {
+                    PostMessageA(
+                        Some(self.message_window.0),
+                        NOTIFY_MESSAGE_ID,
+                        WPARAM(0),
+                        LPARAM(0),
+                    )
+                } {
+                    nih_debug_assert_failure!("Failed to post message to window: {}", e);
+                }
             }
 
             success
@@ -173,13 +189,17 @@ where
 
 impl<T, E> Drop for WindowsEventLoop<T, E> {
     fn drop(&mut self) {
-        unsafe { DestroyWindow(self.message_window) };
-        unsafe {
+        if let Err(e) = unsafe { DestroyWindow(self.message_window.0) } {
+            nih_debug_assert_failure!("Failed to destroy message window: {}", e);
+        }
+        if let Err(e) = unsafe {
             UnregisterClassA(
                 PCSTR(self.message_window_class_name.as_bytes_with_nul().as_ptr()),
-                HINSTANCE(0),
+                None,
             )
-        };
+        } {
+            nih_debug_assert_failure!("Failed to unregister window class: {}", e);
+        }
     }
 }
 
